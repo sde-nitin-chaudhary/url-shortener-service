@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    container_name: url_shortener_api
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DB_SHARD_0_URL=postgresql+asyncpg://postgres:postgres@postgres_shard_0:5432/shard_0
+      - DB_SHARD_1_URL=postgresql+asyncpg://postgres:postgres@postgres_shard_1:5432/shard_1
+      - BASE_URL=http://localhost:8000
+    depends_on:
+      - redis
+      - postgres_shard_0
+      - postgres_shard_1
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: url_shortener_redis
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    restart: unless-stopped
+
+  postgres_shard_0:
+    image: postgres:15-alpine
+    container_name: url_shortener_shard_0
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: shard_0
+    ports:
+      - "5433:5432"
+    restart: unless-stopped
+
+  postgres_shard_1:
+    image: postgres:15-alpine
+    container_name: url_shortener_shard_1
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: shard_1
+    ports:
+      - "5434:5432"
+    restart: unless-stopped
