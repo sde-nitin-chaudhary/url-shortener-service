@@ -1,7 +1,8 @@
 from fastapi import FastAPI, Request, HTTPException, status
-from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, HttpUrl, Field
 from typing import Optional
+from contextlib import asynccontextmanager
 import uvicorn
 import re
 
@@ -12,33 +13,32 @@ from app.rate_limiter import RateLimiter
 from app.cache import cache_service
 from app.database import db_manager
 
+# Global instances
+id_generator = SnowflakeIdGenerator(shard_id=0)
+bloom_filter = BloomFilter(expected_elements=1000000, false_positive_rate=0.01)
+rate_limiter = RateLimiter(default_capacity=settings.RATE_LIMIT_CAPACITY, default_refill_rate=settings.RATE_LIMIT_REFILL_RATE)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await cache_service.connect()
+    yield
+    await cache_service.close()
+
 app = FastAPI(
     title=settings.PROJECT_NAME,
     description="Horizontally Scalable URL Shortener Microservice with Base62 encoding, Redis write-through caching, database sharding, and Bloom filter collision checks.",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
-    openapi_url="/openapi.json"
+    openapi_url="/openapi.json",
+    lifespan=lifespan
 )
-
-# Global instances
-id_generator = SnowflakeIdGenerator(shard_id=0)
-bloom_filter = BloomFilter(expected_elements=1000000, false_positive_rate=0.01)
-rate_limiter = RateLimiter(default_capacity=settings.RATE_LIMIT_CAPACITY, default_refill_rate=settings.RATE_LIMIT_REFILL_RATE)
-
-@app.on_event("startup")
-async def startup_event():
-    await cache_service.connect()
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    await cache_service.close()
 
 # Pydantic Request/Response Models
 class ShortenRequest(BaseModel):
-    original_url: HttpUrl = Field(..., description="The original long URL to shorten", example="https://en.wikipedia.org/wiki/Distributed_computing")
-    custom_alias: Optional[str] = Field(None, min_length=3, max_length=16, description="Optional custom short alias", example="dist-comp")
-    ttl_seconds: Optional[int] = Field(None, ge=60, description="Optional TTL expiration in seconds", example=86400)
+    original_url: HttpUrl = Field(..., description="The original long URL to shorten", examples=["https://en.wikipedia.org/wiki/Distributed_computing"])
+    custom_alias: Optional[str] = Field(None, min_length=3, max_length=16, description="Optional custom short alias", examples=["dist-comp"])
+    ttl_seconds: Optional[int] = Field(None, ge=60, description="Optional TTL expiration in seconds", examples=[86400])
 
 class ShortenResponse(BaseModel):
     short_code: str

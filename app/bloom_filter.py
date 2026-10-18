@@ -1,5 +1,4 @@
 import math
-import mmh3  # MurmurHash3 or fallback to hashlib
 import hashlib
 
 class BloomFilter:

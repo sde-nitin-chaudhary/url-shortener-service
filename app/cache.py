@@ -1,4 +1,3 @@
-import json
 import logging
 from typing import Optional
 from app.config import settings

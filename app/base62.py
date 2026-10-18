@@ -1,6 +1,5 @@
 import time
 import threading
-import hashlib
 
 BASE62_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 BASE = len(BASE62_ALPHABET)
