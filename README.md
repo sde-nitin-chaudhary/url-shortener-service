@@ -7,103 +7,112 @@
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A production-grade, horizontally scalable URL shortening microservice built with **Python (FastAPI)**, **PostgreSQL with database-level sharding**, **Redis write-through caching**, **Base62 encoding with Snowflake ID generation**, **Token Bucket rate limiting**, and **Bloom filter collision detection**.
+A horizontally scalable URL shortening microservice built with **Python (FastAPI)**, **PostgreSQL (database sharding)**, **Redis (write-through caching)**, **Base62 encoding with Snowflake ID generation**, **Token Bucket rate limiting**, and **Bloom filter collision rejection**.
 
-Designed following the **OpenAPI 3.0 specification** to handle **10,000+ concurrent redirect requests** with **p99 latency under 15 ms**.
+Designed to sustain **10,000+ concurrent redirect requests** with a **p99 latency under 15 ms**.
 
 ---
 
 ## 📖 Overview
 
-A horizontally scalable URL shortening microservice engineered with **FastAPI**, **PostgreSQL** (horizontally partitioned across database shards), and **Redis** write-through caching.
+URL redirection services operate under extreme asymmetric read-to-write ratios (frequently exceeding 10:1) with strict sub-15ms latency requirements. This microservice implements a production-ready URL shortener architecture engineered to sustain high-throughput redirection traffic while insulating primary storage systems from connection spikes and read contention.
 
-To generate unique, non-colliding short aliases without relying on centralized database auto-increments, it combines a distributed 64-bit Snowflake ID generator with Base62 encoding. Incoming redirect traffic checks an in-memory Bloom filter for rapid $O(1)$ collision checks and queries a write-through Redis cache that serves over 99% of redirect lookups in under 1 ms. On cache misses, deterministic hash routing directs queries to the appropriate database shard. Downstream services are protected by token bucket rate limiting per client IP.
+To generate unique, collision-resistant short aliases without relying on centralized database auto-increment locks, the service pairs a 64-bit distributed Snowflake ID generator with Base62 alphanumeric encoding. Incoming redirect requests execute an $O(1)$ membership check via an in-memory Bloom filter and resolve against a write-through Redis cache that serves over 99% of hot lookups in sub-millisecond time. On cache misses, requests are deterministically routed across horizontally partitioned database shards. Ingress endpoints are guarded by a token-bucket rate limiter per client IP.
 
 ---
 
-## 🏛️ High-Level System Architecture
+## 🏛️ System Architecture
 
 ```mermaid
 flowchart TD
-    Client["Client / Browser"]
-    Ingress["Nginx / Ingress Gateway"]
-    FastAPI["FastAPI App Workers"]
-    Limiter["Token Bucket Limiter<br/>(Per-IP Rate Limiting)"]
-    Bloom["Bloom Filter<br/>(1% False Positive Check)"]
-    Snowflake["Snowflake ID Generator<br/>(64-bit ID / Base62 Encoding)"]
-    Redis["Redis Write-Through Cache<br/>(24h TTL / Sub-ms Reads)"]
-    DBRouter["Database Sharding Router<br/>(Hash Code % Shards)"]
-    Shard0["PostgreSQL Shard 0"]
-    Shard1["PostgreSQL Shard 1"]
+    Client["Client / User Agent"]
+    Gateway["Reverse Proxy / Nginx Ingress"]
+    API["FastAPI Worker Pool"]
 
-    Client -->|HTTPS REST| Ingress
-    Ingress --> FastAPI
-    FastAPI --> Limiter
-    FastAPI --> Bloom
-    FastAPI --> Snowflake
-    FastAPI --> Redis
-    Redis -->|Cache Miss| DBRouter
-    DBRouter --> Shard0
-    DBRouter --> Shard1
+    subgraph Defense ["Traffic Protection & Collision Detection"]
+        Limiter["Token Bucket Rate Limiter<br/>(Per-IP Throttling)"]
+        Bloom["In-Memory Bloom Filter<br/>(1% FPR Fast Rejection)"]
+    end
+
+    subgraph Caching ["Low-Latency Cache"]
+        Redis[("Redis Cluster / Write-Through Cache<br/>(24h TTL / Sub-ms Reads)")]
+    end
+
+    subgraph Storage ["Partitioned Persistence"]
+        Snowflake["Snowflake Generator<br/>(64-bit ID + Base62)"]
+        Router["Database Shard Router<br/>(MD5 Hash % Num Shards)"]
+        Shard0[("PostgreSQL Shard 0")]
+        Shard1[("PostgreSQL Shard 1")]
+    end
+
+    Client -->|HTTP Request| Gateway
+    Gateway --> API
+    API --> Limiter
+    API --> Bloom
+    API -->|Write Path: Generate ID| Snowflake
+    API -->|Read Path: Cache Lookup| Redis
+    API -.->|Cache Miss / Write Path| Router
+    Router --> Shard0
+    Router --> Shard1
 ```
 
 ---
 
-## 📊 Capacity Planning & Traffic Estimations
+## 📊 Architectural Sizing & Scale Characteristics
 
-Calculated operational capacity and resource estimations for production scale:
+Component sizing calculations and operational characteristics under high load:
 
-| Metric | Estimation | Calculation |
+| Dimension | Specification | Architectural Context |
 | :--- | :--- | :--- |
-| **Write Traffic (New URLs)** | 100 Million URLs/month | ≈ 40 writes/sec |
-| **Read Traffic (Redirects)** | 10:1 Read-to-Write Ratio | ≈ 400 reads/sec ($10,000$ peak QPS) |
-| **Storage (5 Years)** | 6 Billion URLs | 6 × 10⁹ × 500 bytes ≈ 3 TB |
-| **Unique IDs (Base62)** | 7 characters: $62^7$ | **3.52 Trillion** unique URLs |
-| **Cache Memory (80/20 Rule)** | 20% of daily URLs cached | $0.20 \times (3.3\text{M URLs/day}) \times 500\text{B} \approx 330\text{ MB/day}$ |
+| **Key Space Capacity** | **3.52 Trillion** unique keys | 7-character Base62 string ($62^7 \approx 3.52 \times 10^{12}$) eliminates predictable sequential enumeration and scraping. |
+| **Bloom Filter Sizing** | **~1.14 MB** RAM for $10^6$ keys | Optimal bit array size $m = -\frac{n \ln(p)}{(\ln 2)^2}$ with $k = 7$ hash functions bounds false positive probability to $\le 1\%$, fitting entirely in CPU L3 cache. |
+| **Caching SLA** | **$< 2\text{ ms}$** read latency | Redis write-through cache with a default 24h TTL absorbs $> 95\%$ of repeat traffic, isolating database shards from read hot-spots. |
+| **Target Throughput** | **8,000+ QPS** per node | Asynchronous non-blocking I/O (`uvicorn` + `asyncio`) sustaining p99 latency $< 15\text{ ms}$ under 100 concurrent workers. |
+| **Database Partitioning** | **Horizontal Sharding** | Deterministic hash-based routing (`hash % num_shards`) enables transparent horizontal scaling across multiple PostgreSQL instances. |
 
 ---
 
-## 🚀 Key Engineering Pillars
+## 🔧 Architectural Components & Implementation
 
 1. **Snowflake ID + Base62 Encoding:**
-   * Uses 64-bit Snowflake IDs composed of: Timestamp (41 bits) + Shard ID (10 bits) + Sequence (12 bits).
-   * Encodes the 64-bit integer into Base62 (`[0-9a-zA-Z]`). A 7-character string supports up to **3.5 trillion URLs** with zero sequential vulnerability (cannot be easily scraped).
+   * Generates distributed 64-bit integer IDs structured as: Millisecond Timestamp (41 bits) + Machine/Shard ID (10 bits) + Monotonic Sequence (12 bits).
+   * Encodes the resulting integer into Base62 (`[0-9a-zA-Z]`). This ensures generated short codes are compact, URL-safe, non-sequential, and secure against brute-force traversal.
 
-2. **Bloom Filter for $O(1)$ Collision Rejection:**
-   * Configured with an optimal size $m$ and $k$ hash functions for $10^6$ elements with a bounded 1% false positive rate.
-   * If the Bloom filter returns `False`, the system immediately knows the ID/alias does not exist without querying the database, eliminating unnecessary DB I/O.
+2. **Probabilistic Collision Detection (Bloom Filter):**
+   * Pre-filters custom alias and generated short code lookup attempts before touching persistent storage.
+   * If the Bloom filter returns `False`, the alias is guaranteed not to exist (zero false negatives), eliminating redundant database I/O for non-existent lookups.
 
-3. **Database-Level Sharding:**
-   * Partitions data across multiple database instances using deterministic hash-based routing: `shard_id = hash(short_code) % num_shards`.
-   * Enables horizontal scaling as data volume grows beyond single-machine limits.
+3. **Horizontal Database Sharding:**
+   * Partitions record storage across independent database shards using deterministic hashing: `shard_id = hash(short_code) % num_shards`.
+   * Isolates write throughput and connection pools, preventing any single database instance from becoming a throughput bottleneck.
 
 4. **Redis Write-Through Caching:**
-   * When a URL is created, it is written simultaneously to PostgreSQL and Redis.
-   * Read redirects hit Redis first, returning HTTP 302 in $< 2\text{ ms}$, ensuring p99 latency remains $< 15\text{ ms}$ even under 10,000 concurrent requests.
+   * New URLs are written concurrently to the active database shard and Redis cache.
+   * Redirect queries read from Redis first, bypassing database roundtrips. Cache misses trigger a read-repair backfill into Redis.
 
 5. **Token Bucket Rate Limiting:**
-   * Enforces a burst capacity of 100 tokens with a continuous refill rate of 10 tokens/second per IP address to defend against DDoS attacks and brute-force scanning.
+   * Enforces a burst capacity of 100 tokens with a steady refill rate of 10 tokens/second per client IP to mitigate abusive scraping, DDoS spikes, and automated alias squatting.
 
 ---
 
 ## 🛠️ Quickstart (Running Locally with Docker)
 
-### 1. Clone & Run with Docker Compose
+### 1. Start Services via Docker Compose
 
 ```bash
 docker-compose up --build -d
 ```
 
-This boots up:
+This launches the full distributed topology:
 
-* `api`: FastAPI REST server on port `8000`
+* `api`: FastAPI REST application server on port `8000`
 * `redis`: In-memory cache on port `6379`
 * `postgres_shard_0`: Database Shard 0 on port `5433`
 * `postgres_shard_1`: Database Shard 1 on port `5434`
 
-### 2. Interactive Swagger / OpenAPI 3.0 Documentation
+### 2. Interactive API Documentation
 
-Open your browser to:
+Access the automatically generated OpenAPI 3.0 interfaces:
 
 * **Swagger UI:** [http://localhost:8000/docs](http://localhost:8000/docs)
 * **ReDoc:** [http://localhost:8000/redoc](http://localhost:8000/redoc)
@@ -112,7 +121,7 @@ Open your browser to:
 
 ## 🧪 Testing the API
 
-### 1. Shorten a URL
+### 1. Create a Short URL
 
 ```bash
 curl -X POST "http://localhost:8000/api/v1/shorten" \
@@ -153,9 +162,9 @@ curl "http://localhost:8000/api/v1/analytics/7aB9x1Q"
 
 ---
 
-## ⚡ Running the Latency Benchmark
+## ⚡ Latency Benchmark
 
-Run the asynchronous load generator to test 10,000 concurrent redirect requests:
+Execute the asynchronous load testing tool to evaluate throughput and latency under 10,000 concurrent requests:
 
 ```bash
 python benchmark/benchmark.py --url http://localhost:8000/health --requests 10000 --concurrency 100
@@ -185,25 +194,25 @@ Benchmark Results:
 ## 💡 Key Architectural Design Decisions
 
 ### 1. HTTP 302 (Found) vs. HTTP 301 (Moved Permanently)
-> **Decision**: Return `HTTP 302 Found` for URL redirection.
+> **Decision**: Return `HTTP 302 Found` for all URL redirection flows.
 >
-> **Rationale**: `HTTP 301` instructs client browsers to cache the redirect destination permanently. Subsequent clicks would never hit the shortener service, making real-time click tracking, geolocation analytics, and TTL-based expiration impossible. `HTTP 302` ensures every redirect request routes through the service, enabling low-latency cache evaluation and accurate metrics tracking.
+> **Rationale**: `HTTP 301` instructs client browsers to cache the destination URL locally indefinitely. Subsequent clicks would completely bypass the shortener service, preventing click count tracking, geolocation analytics, and time-to-live (TTL) link expiration enforcement. `HTTP 302` ensures each click reaches the server layer for real-time analytics while leveraging Redis for sub-millisecond response delivery.
 
 ### 2. Base62 vs. Base64 Encoding
-> **Decision**: Use a 62-character alphanumeric alphabet (`[0-9a-zA-Z]`).
+> **Decision**: Restrict short codes to a 62-character alphanumeric set (`[0-9a-zA-Z]`).
 >
-> **Rationale**: Standard Base64 uses `+` and `/`, which are reserved URI delimiters that require percent-encoding (`%2B`, `%2F`) and can cause issues in query strings or messaging clients. Base62 consists strictly of alphanumeric characters, guaranteeing URL safety across browsers, SMS, and clipboard operations without escaping.
+> **Rationale**: Standard Base64 introduces `+` and `/`, both of which are reserved delimiter characters under RFC 3986 that necessitate percent-encoding (`%2B`, `%2F`) and frequently break across SMS clients, chat applications, and command-line tools. Base62 avoids escape sequences entirely, ensuring full URL compatibility across all platforms.
 
 ### 3. Database Sharding & Scaling Strategy
 > **Decision**: Hash-partitioned shards with deterministic routing (`shard_id = hash(short_code) % num_shards`).
 >
-> **Rationale**: Avoids monolithic database bottlenecks by distributing write and read load across independent PostgreSQL instances. When expanding beyond static shard counts, the routing layer can be augmented with consistent hashing (virtual nodes) or a distributed directory lookup to minimize key migration during cluster re-balancing.
+> **Rationale**: Distributing write and read traffic across multiple discrete PostgreSQL instances avoids single-database connection saturation and disk I/O bottlenecks. In expanding clusters, consistent hashing rings with virtual nodes or directory lookup tables can be layered on top to re-shard without exhaustive key migration.
 
 ---
 
-## 📚 References & Recommended Reading
+## 📚 References & Standards
 
-1. **System Design Primer:** <https://github.com/donnemartin/system-design-primer>
-2. **Twitter Snowflake Paper:** *Announcing Snowflake* (Twitter Engineering Blog) — Distributed unique ID generation at scale.
-3. **Designing Data-Intensive Applications (DDIA)** by Martin Kleppmann — Chapter 11 on Stream Processing & Caching Patterns.
-4. **Bloom Filters in Distributed Systems:** *Summary Cache: A Scalable Wide-Area Web Cache Sharing Protocol* (Fan et al., IEEE/ACM Transactions on Networking).
+1. **RFC 9110 (HTTP Semantics):** Section 15.4 — Redirection Status Codes (301 Moved Permanently vs 302 Found caching behaviors).
+2. **RFC 3986 (Uniform Resource Identifier):** Section 2 — Reserved and Unreserved Characters in URI Syntax.
+3. **Twitter Snowflake:** Distributed 64-bit unique sequence generator architecture.
+4. **Bloom, Burton H. (1970):** *Space/Time Trade-offs in Hash Coding with Allowable Errors*, Communications of the ACM.
