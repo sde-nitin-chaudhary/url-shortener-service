@@ -5,16 +5,37 @@ __pycache__/
 
 # Environments
 .env
+.env.*
 .venv
 env/
 venv/
 ENV/
+
+# Databases & local data
+*.db
+*.sqlite
+*.sqlite3
+shard_*.db
+postgres_data/
+redis_data/
 
 # Testing & Coverage
 .pytest_cache/
 .coverage
 htmlcov/
 
-# Docker local data
-postgres_data/
-redis_data/
+# Logs
+*.log
+
+# Editor & OS artifacts
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Agent configurations & private workspace rules
+AGENTS.md
+.agents/
+.gemini/
