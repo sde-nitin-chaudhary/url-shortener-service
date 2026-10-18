@@ -24,7 +24,7 @@ class DatabaseShardManager:
         shard_id = self.get_shard_id(short_code)
         shard = self.shards[shard_id]
 
-        now = datetime.datetime.utcnow()
+        now = datetime.datetime.now(datetime.timezone.utc)
         expires_at = now + datetime.timedelta(seconds=ttl_seconds) if ttl_seconds else None
 
         record = {
@@ -51,7 +51,7 @@ class DatabaseShardManager:
         # Check TTL expiration
         if record.get("expires_at"):
             exp = datetime.datetime.fromisoformat(record["expires_at"])
-            if datetime.datetime.utcnow() > exp:
+            if datetime.datetime.now(datetime.timezone.utc) > exp:
                 del shard[short_code]
                 return None
 
