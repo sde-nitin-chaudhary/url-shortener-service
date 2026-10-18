@@ -1,23 +1,23 @@
 # Scalable URL Shortener Microservice
 
-![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.100%2B-009688?logo=fastapi)
-![Redis](https://img.shields.io/badge/Redis-6.2%2B-red?logo=redis)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-336791?logo=postgresql)
-![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker)
-![License](https://img.shields.io/badge/License-MIT-green)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Redis](https://img.shields.io/badge/Redis-7.0%2B-DC382D?logo=redis&logoColor=white)](https://redis.io/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A production-grade, horizontally scalable URL shortening microservice built with **Python (FastAPI)**, **PostgreSQL with database-level sharding**, **Redis write-through caching**, **Base62 encoding with Snowflake ID generation**, **Token Bucket rate limiting**, and **Bloom filter collision detection**.
 
-Designed following the **OpenAPI 3.0 specification** to sustain **10,000+ concurrent redirect requests** with **p99 latency under 15 ms**.
+Designed following the **OpenAPI 3.0 specification** to handle **10,000+ concurrent redirect requests** with **p99 latency under 15 ms**.
 
 ---
 
-## 📖 System Overview
+## 📖 Overview
 
-This project is a horizontally scalable, production-grade URL shortener microservice engineered with Python FastAPI, PostgreSQL with database sharding, and Redis caching.
+A horizontally scalable URL shortening microservice engineered with **FastAPI**, **PostgreSQL** (horizontally partitioned across database shards), and **Redis** write-through caching.
 
-To generate unique, non-colliding short aliases without relying on centralized database auto-increments, it combines a distributed 64-bit Snowflake ID generator with Base62 encoding. Incoming redirect traffic passes through an Nginx gateway, checks an in-memory Bloom filter for collision avoidance, and hits a write-through Redis cache that serves 99% of lookups in under one millisecond. When a cache miss occurs, a consistent hash router directs queries to the appropriate database shard. The microservice protects downstream services using token bucket rate limiting per client IP.
+To generate unique, non-colliding short aliases without relying on centralized database auto-increments, it combines a distributed 64-bit Snowflake ID generator with Base62 encoding. Incoming redirect traffic checks an in-memory Bloom filter for rapid $O(1)$ collision checks and queries a write-through Redis cache that serves over 99% of redirect lookups in under 1 ms. On cache misses, deterministic hash routing directs queries to the appropriate database shard. Downstream services are protected by token bucket rate limiting per client IP.
 
 ---
 
@@ -49,9 +49,9 @@ flowchart TD
 
 ---
 
-## 📊 Back-of-the-Envelope Capacity Estimations
+## 📊 Capacity Planning & Traffic Estimations
 
-This is the standard capacity model expected in **MAANG System Design (HLD) interviews**:
+Calculated operational capacity and resource estimations for production scale:
 
 | Metric | Estimation | Calculation |
 | :--- | :--- | :--- |
@@ -184,14 +184,20 @@ Benchmark Results:
 
 ## 💡 Key Architectural Design Decisions
 
-### Decision 1: HTTP 302 (Found) vs. HTTP 301 (Moved Permanently)
-> *"HTTP 301 is cached by the user's browser permanently. If a browser caches the redirect, subsequent clicks never hit our server, breaking click analytics and preventing TTL-based link expiration. HTTP 302 forces the browser to query our service on every click, allowing us to track real-time analytics and enforce expiration policies."*
+### 1. HTTP 302 (Found) vs. HTTP 301 (Moved Permanently)
+> **Decision**: Return `HTTP 302 Found` for URL redirection.
+>
+> **Rationale**: `HTTP 301` instructs client browsers to cache the redirect destination permanently. Subsequent clicks would never hit the shortener service, making real-time click tracking, geolocation analytics, and TTL-based expiration impossible. `HTTP 302` ensures every redirect request routes through the service, enabling low-latency cache evaluation and accurate metrics tracking.
 
-### Decision 2: Base62 vs. Base64 Encoding
-> *"Base64 includes `+` and `/`, which are reserved URL characters that require percent-encoding (`%2B`, `%2F`). Base62 uses only alphanumeric characters `[0-9a-zA-Z]`, making short codes completely safe for URLs, copy-pasting, and SMS messages without escape sequences."*
+### 2. Base62 vs. Base64 Encoding
+> **Decision**: Use a 62-character alphanumeric alphabet (`[0-9a-zA-Z]`).
+>
+> **Rationale**: Standard Base64 uses `+` and `/`, which are reserved URI delimiters that require percent-encoding (`%2B`, `%2F`) and can cause issues in query strings or messaging clients. Base62 consists strictly of alphanumeric characters, guaranteeing URL safety across browsers, SMS, and clipboard operations without escaping.
 
-### Decision 3: Consistent Hashing & Horizontal Sharding Topology
-> *"Naive modulo hashing (`hash % N`) causes mass key migration when $N$ changes. In production, we combine Consistent Hashing with virtual buckets or use directory-based sharding with a lookup service (like Apache ZooKeeper or an auxiliary metadata table), so only $1/N$ fraction of keys migrate during cluster resizing."*
+### 3. Database Sharding & Scaling Strategy
+> **Decision**: Hash-partitioned shards with deterministic routing (`shard_id = hash(short_code) % num_shards`).
+>
+> **Rationale**: Avoids monolithic database bottlenecks by distributing write and read load across independent PostgreSQL instances. When expanding beyond static shard counts, the routing layer can be augmented with consistent hashing (virtual nodes) or a distributed directory lookup to minimize key migration during cluster re-balancing.
 
 ---
 
